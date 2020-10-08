@@ -1,7 +1,10 @@
 /******************************************************************************
 -------------------------1.开发环境:Arduino IDE-----------------------------------
--------------------------------2.作者：starky-----------------------------------------
-DS1302:from https://www.jianshu.com/p/142435a024a1
+-------------------------2.作者：skyqin199----------------------------------------
+DS1302 code from: https://www.jianshu.com/p/142435a024a1
+ATH10 code from: https://blog.csdn.net/qq_45512059/article/details/106281476
+VFD drive from: 淘宝店铺
+Read_Volts from: https://blog.csdn.net/u013810296/article/details/86746666
 ******************************************************************************/
 #include <Arduino.h>
 #include "DS1302.h"
@@ -10,7 +13,7 @@ DS1302:from https://www.jianshu.com/p/142435a024a1
 #include "AHT10.h"
 
 #include "Arduino.h" //用于包含如ADMUX等寄存器的宏
-//code from:https://blog.csdn.net/u013810296/article/details/86746666
+
 #if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
 #define ADMUX_VCCWRT1V1 (_BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1))
 #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
@@ -20,7 +23,114 @@ DS1302:from https://www.jianshu.com/p/142435a024a1
 #else
 #define ADMUX_VCCWRT1V1 (_BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1))
 #endif
+#include <avr/sleep.h>
+#include <avr/wdt.h>
 
+volatile byte data = 0;
+void setup_watchdog(int ii) {
+
+    byte bb;
+
+    if (ii > 9) ii = 9;
+    bb = ii & 7;
+    if (ii > 7) bb |= (1 << 5);
+    bb |= (1 << WDCE);
+    MCUSR &= ~(1 << WDRF);
+    // start timed sequence
+    WDTCSR |= (1 << WDCE) | (1 << WDE);
+    // set new watchdog timeout value
+    WDTCSR = bb;
+    WDTCSR |= _BV(WDIE);
+}
+//WDT interrupt
+ISR(WDT_vect) {
+    ++data;
+    // wdt_reset();
+}
+
+float dim[100];//2~233
+uint8_t Dim = 50;  //1~254
+
+void Set_Dim(int x)
+{
+    int value = x;
+    if (value < 2) value = 1;
+    else if (value > 232) value = 254;
+    Dim = value;
+
+    VFD_dim(value);
+}
+
+//void set_dim(int x)//按照百分比设置亮度
+//{
+//    int percent = (int)((Dim - 2) * 2.3);
+//    int dim_set = Dim + x;
+//    int set_value = 2 + (int)((230 * dim_set) / 100);//设置真实亮度
+//
+//}
+
+void Change_Dim(int x)//按照真实值改变亮度
+{
+    int dim_real = Dim;//真实亮度
+    dim_real += x;
+    if (dim_real < 2) dim_real = 2;
+    else if (dim_real > 232) dim_real = 232;
+
+    Set_Dim(dim_real);
+}
+
+
+
+int get_light() // 0~99
+{
+    int Light = (820 - analogRead(1)) / 7;
+    if (Light < 0) return 0;
+    else if (Light > 99) return 99;
+
+    return Light;
+}
+
+void init_light()
+{
+    for (int i = 120,j = 0; i < 820; i+=7, j++)
+    {
+        dim[j] = (235 - (820.00 - i) / 3);//2---->233
+    }
+}
+
+void Light_Change(int light, int x)//light--->percent. x---->real change of dim 
+{
+    
+    float t = (dim[light] + x)/ dim[light];//变化倍数
+    for (int i = 0; i <= light; i++)
+    {
+        dim[i] *= t;
+    }
+
+}
+
+void auto_light()
+{
+    int light = get_light();
+    int D = (int)dim[light];
+    Set_Dim(D);
+}
+
+
+
+void Sleep_avr() {
+    sleep_cpu();
+}
+void power_setup() {
+    //setup_watchdog(9);
+    // 0=16ms, 1=32ms,2=64ms,3=128ms,4=250ms,5=500ms
+    // 6=1 sec,7=2 sec, 8=4 sec, 9= 8sec
+    //ACSR |= _BV(ACD);//OFF ACD
+    //ADCSRA = 0;//OFF ADC
+    //Sleep_avr();//Sleep_Mode
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN); // sleep mode is set here
+    sleep_enable();
+}
 
 float Read_Volts1(void)
 {
@@ -68,7 +178,7 @@ uint8_t CTL1 = 3;  //mode
 uint8_t CTL2 = 6;  //set
 uint8_t Light = 1;  //set
 
-uint8_t dim = 50;  //dim
+
 uint8_t last_dim = 100;  //dim
 
 boolean switch_state = true;
@@ -292,9 +402,6 @@ void Display_RTCC()
     }
     else
     {
-        //int slot = 10;
-        //int half_times = 500/10;
-
         int hour1 = DS1302Buffer.Hour / 10;
         int hour2 = DS1302Buffer.Hour % 10;
         if (hour1 != h1)
@@ -330,12 +437,54 @@ void Display_RTCC()
         m2 = mins2;
         s1 = sec1;
         s2 = sec2;
-
     }
-
 
 }
 
+
+
+void Display_SAVE()
+{
+
+   
+    int hour1 = DS1302Buffer.Hour / 10;
+    int hour2 = DS1302Buffer.Hour % 10;
+    if (hour1 != h1)
+        S1201_WriteOneChar(0, hour1);
+    if (hour2 != h2)
+        S1201_WriteOneChar(1, hour2);
+
+    S1201_WriteOneChar1(2, ':');
+    S1201_WriteOneChar1(5, ':');
+
+    int mins1 = DS1302Buffer.Minute / 10;
+    int mins2 = DS1302Buffer.Minute % 10;
+    if (mins1 != m1)
+        S1201_WriteOneChar(3, mins1);
+    if (mins2 != m2)
+        S1201_WriteOneChar(4, mins2);
+
+
+    int sec1 = DS1302Buffer.Second / 10;
+    int sec2 = DS1302Buffer.Second % 10;
+    if (sec1 != s1)
+        S1201_WriteOneChar(6, sec1);
+    if (sec2 != s2)
+        S1201_WriteOneChar(7, sec2);
+    delay(500);
+    S1201_WriteOneChar1(2, ' ');
+    S1201_WriteOneChar1(5, ' ');
+    delay(500);
+
+    h1 = hour1;
+    h2 = hour1;
+    m1 = mins1;
+    m2 = mins2;
+    s1 = sec1;
+    s2 = sec2;
+
+
+}
 
 //开关是否按下函数
 boolean press_switch()
@@ -424,7 +573,7 @@ void tomato(int i)
         delay(180);
     }
 
-    VFD_dim(dim);
+    auto_light();
 
     take_rest();
     S1201_WriteStr(0, "Go on ??");
@@ -522,6 +671,69 @@ void take_rest()
 }
 
 
+void roll()
+{
+    int Value = analogRead(CTL2);
+    int slot = 70;
+    int h = DS1302Buffer.Hour;
+    int m = DS1302Buffer.Minute;
+    int s = DS1302Buffer.Second;
+    delay(30);
+    while (Value > 800)
+    {
+
+        if (s < 59)
+        {
+            s += 7;
+
+        }
+        else
+        {
+            s = 0;
+            if (m < 59)
+            {
+                m += 2;
+
+            }
+            else
+            {
+                m = 0;
+                if (h < 23) h++;
+                else h = 0;
+            }
+        }
+        slot--;
+        if (slot <= 0) slot = 5;
+        delay(slot);
+        print_time(h, m, s);
+        Value = analogRead(CTL2);
+    }
+}
+
+void print_time(int hour,int mins,int sec)
+{
+
+
+    int hour1 = hour / 10;
+    int hour2 = hour % 10;
+
+    int mins1 = mins / 10;
+    int mins2 = mins % 10;
+
+    int sec1 = sec / 10;
+    int sec2 = sec % 10;
+
+    S1201_WriteOneChar(0, hour1);
+    S1201_WriteOneChar(1, hour2);
+    S1201_WriteOneChar1(2, ':');
+    S1201_WriteOneChar(3, mins1);
+    S1201_WriteOneChar(4, mins2);
+    S1201_WriteOneChar1(5, ':');
+    S1201_WriteOneChar(6, sec1);
+    S1201_WriteOneChar(7, sec2);
+
+}
+
 //打印函数
 void print_tomato()
 {
@@ -548,8 +760,6 @@ void print_bye()
 
 
 }
-
-
 
 void print_vcc()
 {
@@ -650,7 +860,7 @@ void print_bat()
 void print_dim()
 {
 
-    int i = (100 * dim) / 255;
+    int i = (100 * Dim) / 255;
     int i1 = i / 100;//3
     int i2 = (i - i1 * 100) / 10;//9
     int i3 = (i - i1 * 100) % 10;//8
@@ -709,33 +919,45 @@ void print_hum() {
 
 }
 
-
-void Light_auto(int x)
+void print_shutdown()
 {
-    int Light = analogRead(1);
-    if (Light > 800)
-        dim = 10 + x;
-    else if (Light > 800)
-        dim = 20 + x;
-    else if (Light > 700)
-        dim = 30 + x;
-    else if (Light > 600)
-        dim = 50 + x;
-    else if (Light > 500)
-        dim = 80 + x;
-    else if (Light > 400)
-        dim = 110 + x;
-    else if (Light > 300)
-        dim = 140 + x;
-    else if (Light > 200)
-        dim = 170 + x;
-    else if (Light > 100)
-        dim = 200 + x;
-    if (dim <= 0) dim = 10;
-    else if (dim >= 250) dim = 250;
+    int slot = 170;
+
+
+    S1201_WriteStr(0, "SHUTDOWN");
+    delay(slot);
+    S1201_WriteStr(0, "        ");
+    delay(slot);
+
+
+}
+void print_show()
+{
+    int slot = 170;
+    S1201_WriteStr(0, "SHOW INF");
+    delay(slot);
+    S1201_WriteStr(0, "        ");
+    delay(slot);
 
 }
 
+void print_L_INC()
+{
+    int slot = 170;
+    S1201_WriteStr(0, "INC LGT");
+    delay(slot);
+    S1201_WriteStr(0, "        ");
+    delay(slot);
+}
+
+void print_L_DEC()
+{
+    int slot = 170;
+    S1201_WriteStr(0, "DEC LGT");
+    delay(slot);
+    S1201_WriteStr(0, "        ");
+    delay(slot);
+}
 
 
 
@@ -752,7 +974,8 @@ void power_save()
     digitalWrite(pk, LOW);
     delay(200);
     digitalWrite(pk, HIGH);
-    delay(200);
+    delay(2000);
+    //Sleep_avr();
 }
 
 
@@ -769,8 +992,11 @@ void AHT_setup()
 
 void setup()
 {
+    //Serial.begin(9600);
     DS1302_Init();
+    power_setup();
     AHT_setup();
+    init_light();
     DS1302_GetTime(&DS1302Buffer);
     Display_RTCC();
     //Set_Time1(20, 10, 02, 5, 19, 18, 0);
@@ -790,17 +1016,18 @@ void setup()
     digitalWrite(Reset, HIGH);
     VFD_init();
     VFD_cmd(0xE9);// 全亮
-    VFD_dim(dim);
+    VFD_dim(Dim);
     switch_state = digitalRead(CTL1);
     Zero_time();
 }
 
-int i = 0;
+//int i = 0;
 
 
 void loop()
 {
     DS1302_GetTime(&DS1302Buffer);        //获取当前RTCC值
+    int Value = analogRead(CTL2);
     int vcc = int(Read_Volts1() * 100);
     if (vcc < 370)//待机模式
     {
@@ -808,16 +1035,23 @@ void loop()
     }
     else if (vcc < 380)//省电模式
     {
-        S1201_WriteStr(0, "        ");
+        Set_Dim(5);
+        
         if ((DS1302Buffer.Second >= 57 && DS1302Buffer.Second <= 59) || (DS1302Buffer.Second == 0) || (DS1302Buffer.Second == 1))
         {
-            Display_RTCC();
+            Display_SAVE();
         }
+        else S1201_WriteStr(0, "        ");
+    }
+    else if (Value > 800)//roll模式
+    {
+        roll();
+        Zero_time();
+
     }
     else//正常模式
     {
-        Light_auto(Light_Offenset);
-        VFD_dim(dim);
+        auto_light();
 
         if (DS1302Buffer.Second % 58 == 0 && DS1302Buffer.Minute % 3 == 0)//每三分钟输出电池信息
         {
@@ -846,64 +1080,111 @@ void loop()
             }
 
             
-
-
-            //显示电压模式
+            //关机操作
             while (press_switch() == false)
             {
-                print_vcc();
-                delay(400);
+                int Value = analogRead(CTL2);
+                print_shutdown();
+                if (Value > 800)
+                {
+                    print_bye();
+                    power_save();
+                    Zero_time();
+                }
             }
 
-            //显示电量模式
+            //显示操作
+            int show = 0;
             while (press_switch() == false)
             {
-                print_bat();
-            }
 
-            //显示温度模式
-            while (press_switch() == false)
-            {
-                print_temp();
+                print_show();
+                int Value = analogRead(CTL2);
+                while (Value > 800)
+                {
+                    switch (show)
+                    {
+                    case 0:  print_bat(); break;
+                    case 1:  print_vcc(); break;
+                    case 2:  print_temp(); break;
+                    case 3:  print_hum(); break;
+                    case 4:  print_dim(); break;
+                    default:break;
+                    }
+                    delay(400);
+                    show++;
+                    if (show > 4) show = 0;
+                    Value = analogRead(CTL2);
+                }
             }
-
-            //显示湿度模式
-            while (press_switch() == false)
-            {
-                print_hum();
-            }
+            
 
             //设置亮度+模式
+            int light_now, Dim_change = 0;
+            light_now = get_light();
             while (press_switch() == false)
             {
-                print_dim();
-                int Value = analogRead(CTL2);
-                if (Value > 800)
-                {
-                    Light_Offenset += 10;
-                }
-                Light_auto(Light_Offenset);
-                VFD_dim(dim);
 
-                delay(200);
+                print_L_INC();
+                Value = analogRead(CTL2);
+                while (Value > 800)
+                {
+                   
+                    Change_Dim(3);//按照真实值改变亮度
+                    Dim_change += 3;
+                    print_dim();
+                    delay(100);
+                    Value = analogRead(CTL2);
+                }
             }
+
+            Light_Change(light_now, Dim_change);
+            auto_light();
+
 
             //设置亮度-模式
+            Dim_change = 0;
+            light_now = get_light();
             while (press_switch() == false)
             {
-                print_dim();
-                int Value = analogRead(CTL2);
-                if (Value > 800)
-                {
-                    Light_Offenset -= 10;
-                }
-                Light_auto(Light_Offenset);
-                VFD_dim(dim);
 
-                delay(200);
+                print_L_DEC();
+                Value = analogRead(CTL2);
+                while (Value > 800)
+                {
+
+                    Change_Dim(-3);//按照真实值改变亮度
+                    Dim_change -= 3;
+                    print_dim();
+                    delay(100);
+                    Value = analogRead(CTL2);
+                }
             }
 
+            Light_Change(light_now, Dim_change);
+            auto_light();
 
+
+
+
+
+            ////设置亮度-模式
+            //while (press_switch() == false)
+            //{
+
+            //    print_L_DEC();
+            //    int Value = analogRead(CTL2);
+            //    while (Value > 800)
+            //    {
+            //        Light_Offenset -= 5;
+
+            //        Light_auto(Light_Offenset);
+            //        VFD_dim(dim);
+            //        print_dim();
+            //        delay(100);
+            //        Value = analogRead(CTL2);
+            //    }
+            //}
 
             Zero_time();
         }
